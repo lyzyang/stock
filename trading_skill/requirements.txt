@@ -1,0 +1,4 @@
+# 股票T+0决策工具依赖
+pandas>=2.0.0
+requests>=2.28.0
+chinese-calendar>=1.0.0
