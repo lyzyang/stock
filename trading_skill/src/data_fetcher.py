@@ -10,7 +10,8 @@ from datetime import datetime
 from typing import Optional
 
 from config import (
-    STOCK_CODE, EXCHANGE, KLINE_PERIOD, KLINE_COUNT
+    STOCK_CODE, EXCHANGE, KLINE_PERIOD, KLINE_COUNT,
+    LONG_KLINE_PERIOD, LONG_KLINE_COUNT
 )
 from logger import info, debug, warn, error
 
@@ -143,16 +144,22 @@ def _to_tencent_code(code: str, exchange: str) -> str:
     return f"{prefix}{code}"
 
 
-def get_kline_data(realtime_price: float = None, max_retries: int = 3) -> Optional[pd.DataFrame]:
+def get_kline_data(realtime_price: float = None, max_retries: int = 3, 
+                   period: str = None, count: int = None) -> Optional[pd.DataFrame]:
     """
     获取K线数据（优先新浪接口）
     参数:
         realtime_price: 实时价格，用于数据新鲜度校验
         max_retries: 数据过期时的最大重试次数
+        period: K线周期，默认为配置文件中的KLINE_PERIOD
+        count: 获取K线根数，默认为配置文件中的KLINE_COUNT
     返回: DataFrame 包含 open, high, low, close, volume 列
     """
+    use_period = period if period else KLINE_PERIOD
+    use_count = count if count else KLINE_COUNT
+
     fetchers = [
-        ("新浪K线", _get_kline_sina),
+        ("新浪K线", lambda: _get_kline_sina(use_period, use_count)),
     ]
 
     for attempt in range(max_retries):
@@ -193,9 +200,24 @@ def get_kline_data(realtime_price: float = None, max_retries: int = 3) -> Option
     return None
 
 
-def _get_kline_sina() -> Optional[pd.DataFrame]:
+def get_long_kline_data(realtime_price: float = None) -> Optional[pd.DataFrame]:
+    """
+    获取辅助周期K线数据（用于趋势判断）
+    参数:
+        realtime_price: 实时价格，用于数据新鲜度校验
+    返回: DataFrame 包含 open, high, low, close, volume 列
+    """
+    return get_kline_data(realtime_price=realtime_price, 
+                          period=LONG_KLINE_PERIOD, 
+                          count=LONG_KLINE_COUNT)
+
+
+def _get_kline_sina(period: str = None, count: int = None) -> Optional[pd.DataFrame]:
     """使用新浪接口获取K线数据"""
     sina_code = _to_sina_code(STOCK_CODE, EXCHANGE)
+
+    use_period = period if period else KLINE_PERIOD
+    use_count = count if count else KLINE_COUNT
 
     # scale: 5=5分钟, 15=15分钟, 30=30分钟, 60=60分钟, 240=日线
     scale_map = {
@@ -206,9 +228,9 @@ def _get_kline_sina() -> Optional[pd.DataFrame]:
         "60min": "60",
         "daily": "240",
     }
-    scale = scale_map.get(KLINE_PERIOD, "5")
+    scale = scale_map.get(use_period, "5")
 
-    url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sina_code}&scale={scale}&ma=no&datalen={KLINE_COUNT}&_={int(time.time()*1000)}"
+    url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sina_code}&scale={scale}&ma=no&datalen={use_count}&_={int(time.time()*1000)}"
     headers = {
         "Referer": "https://finance.sina.com.cn",
         "User-Agent": "Mozilla/5.0",

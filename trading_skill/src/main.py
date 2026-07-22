@@ -18,7 +18,7 @@ from config import (
     MA_SHORT,
 )
 from logger import info
-from data_fetcher import get_realtime_quote, get_kline_data, get_daily_kline
+from data_fetcher import get_realtime_quote, get_kline_data, get_daily_kline, get_long_kline_data
 from analyzer import (
     analyze_t0_signal, check_exit_signal, analyze_exit_decision,
     calculate_bollinger, calculate_predicted_price,
@@ -71,10 +71,11 @@ def run_analysis() -> dict:
             
             kline = get_kline_data(realtime_price=current_price)
             daily_kline = get_daily_kline()
+            long_kline = get_long_kline_data(realtime_price=current_price)
 
             if kline is not None and not kline.empty:
                 if not is_exit_decision:
-                    latest_signal = analyze_t0_signal(kline, current_price, daily_kline)
+                    latest_signal = analyze_t0_signal(kline, current_price, daily_kline, long_kline)
                     if latest_signal:
                         latest_trade_type = latest_signal.get("trade_type")
                         if latest_trade_type == trade_type:
@@ -245,9 +246,10 @@ def run_analysis() -> dict:
     # 获取K线数据
     kline = get_kline_data(realtime_price=current_price)
     daily_kline = get_daily_kline()
+    long_kline = get_long_kline_data(realtime_price=current_price)
 
     # 分析信号
-    signal = analyze_t0_signal(kline, current_price, daily_kline)
+    signal = analyze_t0_signal(kline, current_price, daily_kline, long_kline)
 
     if signal:
         # 保存待确认决策

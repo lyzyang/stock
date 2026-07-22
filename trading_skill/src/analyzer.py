@@ -109,10 +109,16 @@ def analyze_t0_signal(
     kline_df: pd.DataFrame,
     current_price: float,
     daily_kline: Optional[pd.DataFrame] = None,
+    long_kline_df: Optional[pd.DataFrame] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     T+0 信号分析主函数
     返回决策信号字典，无信号返回 None
+    参数:
+        kline_df: 主周期K线数据
+        current_price: 当前价格
+        daily_kline: 日K线数据（可选）
+        long_kline_df: 辅助周期K线数据（可选，用于趋势判断）
     """
     if kline_df is None or kline_df.empty:
         return None
@@ -127,18 +133,20 @@ def analyze_t0_signal(
 
     deviation_from_ma_short = (current_price - ma_short_val) / ma_short_val
 
+    trend_bias = _analyze_long_period_trend(long_kline_df, current_price)
+
     signal = _check_positive_t_signal(
-        current_price, deviation_from_ma_short, rsi_val, macd, bollinger, close_prices
+        current_price, deviation_from_ma_short, rsi_val, macd, bollinger, close_prices, trend_bias
     )
 
     if not signal:
         signal = _check_negative_t_signal(
-            current_price, deviation_from_ma_short, rsi_val, macd, bollinger, close_prices
+            current_price, deviation_from_ma_short, rsi_val, macd, bollinger, close_prices, trend_bias
         )
 
     if not signal:
         signal = _generate_market_view_signal(
-            current_price, ma_short_val, ma_long_val, rsi_val, macd, bollinger, close_prices
+            current_price, ma_short_val, ma_long_val, rsi_val, macd, bollinger, close_prices, trend_bias
         )
 
     if signal:
@@ -151,23 +159,53 @@ def analyze_t0_signal(
         signal["stock_name"] = STOCK_NAME
         signal["current_price"] = current_price
         signal["trade_shares"] = trade_shares
+
+        trend_info = f" / 趋势: {trend_bias}" if trend_bias else ""
         signal["indicators"] = (
             f"MA{MA_SHORT}: {ma_short_val:.2f} / MA{MA_LONG}: {ma_long_val:.2f} / "
-            f"RSI: {rsi_val:.1f} / MACD: {macd['macd']:.3f}"
+            f"RSI: {rsi_val:.1f} / MACD: {macd['macd']:.3f}{trend_info}"
         )
         signal["entry_price"] = current_price
 
     return signal
 
 
+def _analyze_long_period_trend(long_kline_df: Optional[pd.DataFrame], current_price: float) -> str:
+    """
+    分析辅助周期趋势
+    返回: "上升" / "下降" / "震荡" / ""（无数据）
+    """
+    if long_kline_df is None or long_kline_df.empty:
+        return ""
+
+    close_prices = long_kline_df["close"]
+    if len(close_prices) < 10:
+        return ""
+
+    ma_short = calculate_ma(close_prices, 5)
+    ma_long = calculate_ma(close_prices, 15)
+
+    deviation = (ma_short - ma_long) / ma_long
+
+    if deviation > 0.005:
+        return "上升"
+    elif deviation < -0.005:
+        return "下降"
+    else:
+        return "震荡"
+
+
 def _generate_market_view_signal(
     price: float, ma_short: float, ma_long: float, rsi: float,
     macd: Dict[str, float], bollinger: Dict[str, float],
     close_prices: pd.Series,
+    trend_bias: str = "",
 ) -> Optional[Dict[str, Any]]:
     """
     当没有强烈信号时，生成市场观点建议
     基于当前趋势给出倾向性建议（偏正T/偏反T/观望）
+    参数:
+        trend_bias: 辅助周期趋势判断（上升/下降/震荡）
     """
     deviation_short = (price - ma_short) / ma_short
     deviation_long = (price - ma_long) / ma_long
@@ -204,6 +242,9 @@ def _generate_market_view_signal(
     else:
         reasons.append("价格在布林带中间")
 
+    if trend_bias:
+        reasons.append(f"辅助周期趋势: {trend_bias}")
+
     score = 0
     if rsi > 55:
         score += 1
@@ -220,6 +261,11 @@ def _generate_market_view_signal(
     if macd["macd"] > 0:
         score += 1
     if macd["macd"] < 0:
+        score -= 1
+
+    if trend_bias == "上升":
+        score += 1
+    elif trend_bias == "下降":
         score -= 1
 
     if score >= 2:
@@ -268,10 +314,13 @@ def _check_positive_t_signal(
     price: float, deviation: float, rsi: float,
     macd: Dict[str, float], bollinger: Dict[str, float],
     close_prices: pd.Series,
+    trend_bias: str = "",
 ) -> Optional[Dict[str, Any]]:
     """
     检测正T信号（先买后卖）
     条件：价格跌到支撑位，预期反弹
+    参数:
+        trend_bias: 辅助周期趋势判断（上升/下降/震荡）
     """
     reasons = []
 
@@ -291,7 +340,16 @@ def _check_positive_t_signal(
     if price <= recent_low * 1.003:
         reasons.append("价格接近近期低点")
 
-    if len(reasons) >= 2:
+    if trend_bias:
+        reasons.append(f"辅助周期趋势: {trend_bias}")
+
+    min_reasons = 2
+    if trend_bias == "上升":
+        min_reasons = 2
+    elif trend_bias == "下降":
+        min_reasons = 3
+
+    if len(reasons) >= min_reasons:
         predicted_price = calculate_predicted_price(price, bollinger, close_prices, "positive")
         return {
             "trade_type": "positive",
@@ -314,10 +372,13 @@ def _check_negative_t_signal(
     price: float, deviation: float, rsi: float,
     macd: Dict[str, float], bollinger: Dict[str, float],
     close_prices: pd.Series,
+    trend_bias: str = "",
 ) -> Optional[Dict[str, Any]]:
     """
     检测反T信号（先卖后买）
     条件：价格涨到压力位，预期回落
+    参数:
+        trend_bias: 辅助周期趋势判断（上升/下降/震荡）
     """
     reasons = []
 
@@ -337,7 +398,16 @@ def _check_negative_t_signal(
     if price >= recent_high * 0.997:
         reasons.append("价格接近近期高点")
 
-    if len(reasons) >= 2:
+    if trend_bias:
+        reasons.append(f"辅助周期趋势: {trend_bias}")
+
+    min_reasons = 2
+    if trend_bias == "下降":
+        min_reasons = 2
+    elif trend_bias == "上升":
+        min_reasons = 3
+
+    if len(reasons) >= min_reasons:
         predicted_price = calculate_predicted_price(price, bollinger, close_prices, "negative")
         return {
             "trade_type": "negative",
