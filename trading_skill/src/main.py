@@ -25,7 +25,7 @@ from analyzer import (
 )
 from state_manager import (
     get_state, can_trade, set_pending_decision, update_pending_decision,
-    confirm_decision,
+    confirm_decision, clear_pending_decision,
     get_pending_decision, is_waiting_confirmation,
     is_trade_done, get_status_summary,
 )
@@ -62,33 +62,23 @@ def run_analysis() -> dict:
     if is_waiting_confirmation():
         pending = get_pending_decision()
         if pending:
-            trade_type = pending.get("trade_type")
-            trade_shares = pending.get("trade_shares", int(HOLDING_SHARES * MAX_POSITION_PCT / 100) * 100)
             decision_type = pending.get("decision_type", "")
             is_exit_decision = pending.get("exit_signal") is not None or "出场" in decision_type or "止盈止损" in decision_type
-            
-            pending["current_price"] = current_price
             
             kline = get_kline_data(realtime_price=current_price)
             daily_kline = get_daily_kline()
             long_kline = get_long_kline_data(realtime_price=current_price)
 
-            if kline is not None and not kline.empty:
-                if not is_exit_decision:
-                    latest_signal = analyze_t0_signal(kline, current_price, daily_kline, long_kline)
-                    if latest_signal:
-                        latest_trade_type = latest_signal.get("trade_type")
-                        if latest_trade_type == trade_type:
-                            pending["reason"] = latest_signal.get("reason", pending.get("reason"))
-                            pending["indicators"] = latest_signal.get("indicators", pending.get("indicators"))
-                        else:
-                            info(f"信号方向反转: {trade_type} -> {latest_trade_type}，保持原决策不变")
-
-                bollinger = calculate_bollinger(kline["close"])
-                pending["predicted_price"] = calculate_predicted_price(current_price, bollinger, kline["close"], trade_type)
-            
             if is_exit_decision:
-                trade_type_label = "正T" if trade_type == "positive" else "反T"
+                trade_type = pending.get("trade_type")
+                trade_shares = pending.get("trade_shares", int(HOLDING_SHARES * MAX_POSITION_PCT / 100) * 100)
+                
+                pending["current_price"] = current_price
+                
+                if kline is not None and not kline.empty:
+                    bollinger = calculate_bollinger(kline["close"])
+                    pending["predicted_price"] = calculate_predicted_price(current_price, bollinger, kline["close"], trade_type)
+                
                 if trade_type == "positive":
                     pending["suggested_action"] = (
                         f"卖出 {trade_shares} 股 (价格参考 {current_price:.2f})，完成正T"
@@ -108,29 +98,37 @@ def run_analysis() -> dict:
                     pending["indicators"] = (
                         f"MA{MA_SHORT}: {ma_short_val:.2f} / RSI: {rsi_val:.1f} / MACD: {macd_data['macd']:.3f}"
                     )
+                
+                update_pending_decision(pending)
+                
+                result["action"] = "confirmation"
+                result["message"] = format_decision_message(pending)
+                result["decision"] = pending
+                return result
             else:
-                if trade_type == "positive":
-                    pending["target_price"] = round(current_price * (1 + TAKE_PROFIT_PCT), 2)
-                    pending["stop_loss_price"] = round(current_price * (1 - STOP_LOSS_PCT), 2)
-                    pending["suggested_action"] = (
-                        f"买入 {trade_shares} 股 (价格参考 {current_price:.2f})，等待反弹后卖出等量底仓"
+                if kline is not None and not kline.empty:
+                    latest_signal = analyze_t0_signal(kline, current_price, daily_kline, long_kline)
+                    
+                    if latest_signal:
+                        set_pending_decision(latest_signal)
+                        result["action"] = "confirmation"
+                        result["message"] = format_decision_message(latest_signal)
+                        result["decision"] = latest_signal
+                    else:
+                        clear_pending_decision()
+                        result["action"] = "monitor"
+                        result["message"] = (
+                            f"[监控中] {STOCK_NAME} 当前 {current_price:.2f} 元 "
+                            f"(涨跌幅 {quote.get('change_pct', 0):.2f}%)"
+                        )
+                else:
+                    clear_pending_decision()
+                    result["action"] = "monitor"
+                    result["message"] = (
+                        f"[监控中] {STOCK_NAME} 当前 {current_price:.2f} 元 "
+                        f"(涨跌幅 {quote.get('change_pct', 0):.2f}%)"
                     )
-                elif trade_type == "negative":
-                    pending["target_price"] = round(current_price * (1 - TAKE_PROFIT_PCT), 2)
-                    pending["stop_loss_price"] = round(current_price * (1 + STOP_LOSS_PCT), 2)
-                    pending["suggested_action"] = (
-                        f"卖出 {trade_shares} 股 (价格参考 {current_price:.2f})，等待回落后买入接回"
-                    )
-            
-            if pending.get("exit_signal") is None:
-                pending["entry_price"] = current_price
-            
-            update_pending_decision(pending)
-            
-            result["action"] = "confirmation"
-            result["message"] = format_decision_message(pending)
-            result["decision"] = pending
-        return result
+                return result
 
     # === 场景2: 今日已交易，检查止盈止损、尾盘强平或给出新的出场建议 ===
     if state["traded_today"] and state["entry_price"]:
@@ -152,24 +150,22 @@ def run_analysis() -> dict:
 
         # 如果达到止盈止损或触发保护，覆盖决策类型并添加止盈止损消息
         if exit_signal:
-            indicators = ""
-            if kline is not None and not kline.empty:
-                from analyzer import calculate_ma, calculate_rsi, calculate_macd
-                ma_short_val = calculate_ma(kline["close"], MA_SHORT)
-                rsi_val = calculate_rsi(kline["close"])
-                macd_data = calculate_macd(kline["close"])
-                indicators = (
-                    f"MA{MA_SHORT}: {ma_short_val:.2f} / RSI: {rsi_val:.1f} / MACD: {macd_data['macd']:.3f}"
-                )
-
             if exit_decision:
                 exit_decision["decision_type"] = "止盈止损出场建议"
                 exit_decision["exit_signal"] = exit_signal["signal"]
                 exit_decision["exit_message"] = exit_signal["message"]
                 exit_decision["reason"] = f"{exit_signal['message']}; {exit_decision.get('reason', '')}".strip("; ")
-                if indicators:
-                    exit_decision["indicators"] = indicators
             else:
+                indicators = ""
+                if kline is not None and not kline.empty:
+                    from analyzer import calculate_ma, calculate_rsi, calculate_macd
+                    ma_short_val = calculate_ma(kline["close"], MA_SHORT)
+                    rsi_val = calculate_rsi(kline["close"])
+                    macd_data = calculate_macd(kline["close"])
+                    indicators = (
+                        f"MA{MA_SHORT}: {ma_short_val:.2f} / RSI: {rsi_val:.1f} / MACD: {macd_data['macd']:.3f}"
+                    )
+
                 predicted_price = "N/A"
                 if kline is not None and not kline.empty and bollinger:
                     predicted_price = calculate_predicted_price(current_price, bollinger, kline["close"], state["trade_type"])
@@ -299,21 +295,23 @@ def handle_user_response(price: float) -> dict:
         # 出场确认后交易完成（正T卖出 / 反T买入接回）
         if state.get("trade_phase") == "done":
             exit_price = state.get("exit_price", price)
+            exit_price_str = f"{exit_price:.2f}" if exit_price is not None else "N/A"
             return {
                 "action": "done",
                 "message": (
                     f"[已确认执行] {type_label}操作已全部完成，今日结束。\n"
-                    f"出场价: {exit_price:.2f}\n"
+                    f"出场价: {exit_price_str}\n"
                     "请在广发易淘金APP中确认最终持仓已恢复为底仓。"
                 ),
             }
 
         # 入场确认（正T买入 / 反T卖出）
+        entry_price_str = f"{price:.2f}" if price is not None else "N/A"
         return {
             "action": "confirmed",
             "message": (
                 f"[已确认执行] {type_label}入场\n"
-                f"入场价: {price:.2f}\n"
+                f"入场价: {entry_price_str}\n"
                 f"请在广发易淘金APP中手动操作：\n"
                 f"{state.get('pending_decision', {}).get('suggested_action', '')}\n\n"
                 f"执行后系统将继续监控止盈止损。"

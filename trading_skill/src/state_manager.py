@@ -160,3 +160,10 @@ def get_status_summary() -> str:
     else:
         lines.append("- 状态: 监控中")
     return "\n".join(lines)
+
+
+def clear_pending_decision():
+    """清除待确认的决策"""
+    state = get_state()
+    state["pending_decision"] = None
+    _save_state(state)
