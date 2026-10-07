@@ -1,6 +1,7 @@
 """
 股票T+0决策工具 - 状态管理
-管理每日交易状态：是否已交易、待确认决策、持仓状态等
+只记录客观交易状态（阶段、方向、入场价），不存储任何决策建议。
+决策建议是 LLM 的推理产物，存在于对话上下文中，不落入状态文件。
 """
 
 import json
@@ -10,6 +11,8 @@ from typing import Optional, Dict, Any
 
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "state.json")
+
+VALID_TRADE_TYPES = ("positive", "negative")
 
 
 def _load_state() -> Dict[str, Any]:
@@ -33,10 +36,9 @@ def _default_state() -> Dict[str, Any]:
     """默认状态"""
     return {
         "today": str(date.today()),
-        "traded_today": False,          # 今日是否已完成一次T+0
-        "trade_type": None,             # 今日交易类型: "positive" / "negative" / None
+        "traded_today": False,          # 今日是否已入场
+        "trade_type": None,             # 交易方向: "positive" / "negative" / None
         "trade_phase": "entry",         # 交易阶段: "entry" / "exit" / "done"
-        "pending_decision": None,       # 待确认的决策
         "position_status": "holding",   # 持仓状态: "holding" / "bought_more" / "sold_part"
         "entry_price": None,            # 入场价格
         "entry_time": None,             # 入场时间
@@ -67,73 +69,44 @@ def get_state() -> Dict[str, Any]:
 
 
 def can_trade() -> bool:
-    """检查今日是否还可以交易"""
+    """检查今日是否还可以入场"""
     state = get_state()
     return not state["traded_today"]
 
 
-def set_pending_decision(decision: Dict[str, Any]):
-    """设置待确认的决策"""
+def confirm_decision(price: float, trade_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    用户确认执行，按当前 trade_phase 做确定性状态流转：
+    - entry 阶段：必须由调用方（LLM）告知方向 positive/negative，记录实际入场价后进入 exit
+    - exit 阶段：恢复底仓状态，进入 done
+    流转失败（阶段不匹配/方向缺失）返回 None。
+    """
     state = get_state()
-    state["pending_decision"] = decision
-    _save_state(state)
-
-
-def update_pending_decision(decision: Dict[str, Any]):
-    """更新待确认的决策"""
-    state = get_state()
-    state["pending_decision"] = decision
-    _save_state(state)
-
-
-def confirm_decision(price: Optional[float] = None):
-    """用户确认执行决策"""
-    state = get_state()
-    pending = state.get("pending_decision")
-    if not pending:
-        return None
 
     if state["trade_phase"] == "entry":
+        if trade_type not in VALID_TRADE_TYPES:
+            return None
+
         state["traded_today"] = True
-        state["trade_type"] = pending.get("trade_type")
-        state["position_status"] = pending.get("next_status", "holding")
-        state["entry_price"] = price if price is not None else pending.get("entry_price")
+        state["trade_type"] = trade_type
+        state["position_status"] = "bought_more" if trade_type == "positive" else "sold_part"
+        state["entry_price"] = price
         state["entry_time"] = datetime.now().strftime("%H:%M:%S")
         state["trade_phase"] = "exit"
-        pending_decision_copy = pending.copy()
-        state["pending_decision"] = None
         _save_state(state)
-        result = state.copy()
-        result["pending_decision"] = pending_decision_copy
-        return result
+        return state
 
     if state["trade_phase"] == "exit":
         state["position_status"] = "holding"
         state["entry_price"] = None
         state["entry_time"] = None
         state["trade_phase"] = "done"
-        pending_decision_copy = pending.copy()
-        state["pending_decision"] = None
         _save_state(state)
         result = state.copy()
-        result["pending_decision"] = pending_decision_copy
-        if price is not None:
-            result["exit_price"] = price
+        result["exit_price"] = price
         return result
 
     return None
-
-
-def get_pending_decision() -> Optional[Dict[str, Any]]:
-    """获取待确认的决策"""
-    state = get_state()
-    return state.get("pending_decision")
-
-
-def is_waiting_confirmation() -> bool:
-    """是否正在等待用户确认"""
-    state = get_state()
-    return state.get("pending_decision") is not None
 
 
 def is_trade_done() -> bool:
@@ -143,27 +116,17 @@ def is_trade_done() -> bool:
 
 
 def get_status_summary() -> str:
-    """获取状态摘要（用于OpenClaw上下文）"""
+    """获取状态摘要（调试用）"""
     state = get_state()
     lines = [
         f"- 日期: {state['today']}",
-        f"- 今日已交易: {'是' if state['traded_today'] else '否'}",
+        f"- 交易阶段: {state['trade_phase']}",
+        f"- 今日已入场: {'是' if state['traded_today'] else '否'}",
     ]
     if state["trade_type"]:
-        lines.append(f"- 交易类型: {'正T' if state['trade_type'] == 'positive' else '反T'}")
+        lines.append(f"- 交易方向: {'正T' if state['trade_type'] == 'positive' else '反T'}")
     if state["entry_price"]:
         lines.append(f"- 入场价格: {state['entry_price']}")
     if state["entry_time"]:
         lines.append(f"- 入场时间: {state['entry_time']}")
-    if state["pending_decision"]:
-        lines.append("- 状态: 等待用户确认决策")
-    else:
-        lines.append("- 状态: 监控中")
     return "\n".join(lines)
-
-
-def clear_pending_decision():
-    """清除待确认的决策"""
-    state = get_state()
-    state["pending_decision"] = None
-    _save_state(state)

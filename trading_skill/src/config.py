@@ -45,8 +45,6 @@ KLINE_PERIOD = "5min"        # 主分析周期: 1min, 5min, 15min, 30min, 60min
 KLINE_COUNT = 120            # 主周期获取K线根数
 LONG_KLINE_PERIOD = "15min"  # 辅助分析周期（用于趋势判断）
 LONG_KLINE_COUNT = 20        # 辅助周期获取K线根数
-DEBUG_MODE = False           # 调试模式：True=显示详细日志，False=仅显示必要信息（生产环境）
+DEBUG_MODE = False           # 调试模式：True=显示详细日志（stderr），False=仅输出 JSON（生产环境）
 
-# ========== 输出格式 ==========
-# 决策消息模板（使用 \n 换行符，确保微信等通道能正确显示换行）
-DECISION_TEMPLATE = "T+0 决策报告（{decision_time}）\n\n**基本信息**\n- 股票: {stock_name} ({stock_code})\n- 当前价格: {current_price}\n- 决策类型: {decision_type}\n\n**操作建议**\n- 建议操作: {suggested_action}\n- 预测价: {predicted_price}\n- 目标价: {target_price}\n- 止损价: {stop_loss_price}\n\n**技术指标**\n- {indicators}\n\n**决策原因**\n{reason}\n\n请回复「执行」确认操作，忽略则继续监控"
+# 注：决策报告的输出格式不再由脚本维护，统一在 SKILL.md 中定义，由 LLM 按模板输出。

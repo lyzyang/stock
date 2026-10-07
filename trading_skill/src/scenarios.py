@@ -1,5 +1,7 @@
 """
 股票T+0决策工具 - 场景构造与切换脚本
+新状态模型下状态文件只记录客观交易状态，不再包含 pending_decision；
+"等待确认的建议"存在于 LLM 对话上下文中。
 """
 
 import sys
@@ -10,6 +12,10 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from state_manager import STATE_FILE, _default_state
+
+PT_ENTRY_PRICE = 28.1
+AT_ENTRY_PRICE = 28.8
+ENTRY_TIME = "10:05:00"
 
 
 def _write_state(state: dict):
@@ -31,192 +37,87 @@ def _load_state():
         return _default_state()
 
 
-def setup_pre():
-    """场景: 盘前等待建议"""
+def _entry_state() -> dict:
+    """入场阶段（未交易）"""
     state = _default_state()
     state["today"] = str(date.today())
-    _write_state(state)
-    print("场景: 盘前等待建议")
+    return state
+
+
+def _holding_state(trade_type: str, entry_price: float) -> dict:
+    """已入场、持仓监控阶段"""
+    state = _entry_state()
+    state["traded_today"] = True
+    state["trade_type"] = trade_type
+    state["trade_phase"] = "exit"
+    state["position_status"] = "bought_more" if trade_type == "positive" else "sold_part"
+    state["entry_price"] = entry_price
+    state["entry_time"] = ENTRY_TIME
+    return state
+
+
+def setup_pre():
+    """场景: 盘前等待建议"""
+    _write_state(_entry_state())
+    print("场景: 盘前等待建议（entry 阶段）")
 
 
 def setup_pt_buy_wait():
-    """场景: 设置等待入场确认（正T买入）"""
-    state = _default_state()
-    state["today"] = str(date.today())
-    state["trade_phase"] = "entry"
-    state["pending_decision"] = {
-        "trade_type": "positive",
-        "decision_type": "正T决策",
-        "suggested_action": "买入 100 股 (价格参考 28.10)，等待反弹后卖出等量底仓",
-        "next_status": "bought_more",
-        "target_price": 28.52,
-        "stop_loss_price": 27.54,
-        "predicted_price": 28.47,
-        "reason": "价格接近布林下轨; 价格接近近期低点",
-        "stock_code": "600030.SH",
-        "stock_name": "中信证券",
-        "current_price": 28.1,
-        "trade_shares": 100,
-        "indicators": "MA5=28.09, MA20=28.17, RSI=36.5, MACD=-0.015",
-        "entry_price": 28.1,
-    }
-    _write_state(state)
-    print("场景: 设置等待入场确认（正T买入）")
+    """场景: LLM 已提议正T买入，等待用户确认（脚本侧仍为 entry 阶段）"""
+    _write_state(_entry_state())
+    print("场景: 等待入场确认（正T买入，建议在对话中）")
 
 
 def setup_pt_buy_exec():
-    """场景: 执行入场（正T买入）"""
-    state = _load_state()
-    pending = state.get("pending_decision")
-    if not pending or pending.get("trade_type") != "positive":
-        print("错误: 当前不是正T买入待确认状态")
-        return
-
-    state["traded_today"] = True
-    state["trade_type"] = "positive"
-    state["position_status"] = "bought_more"
-    state["entry_price"] = pending.get("entry_price")
-    state["entry_time"] = "10:05:00"
-    state["trade_phase"] = "exit"
-    state["pending_decision"] = None
-    _write_state(state)
-    print("场景: 执行入场（正T买入）")
+    """场景: 正T已入场"""
+    _write_state(_holding_state("positive", PT_ENTRY_PRICE))
+    print("场景: 已入场（正T买入，等待出场）")
 
 
 def setup_pt_sell_wait():
-    """场景: 设置等待出场确认（正T卖出）"""
-    state = _default_state()
-    state["today"] = str(date.today())
-    state["traded_today"] = True
-    state["trade_type"] = "positive"
-    state["trade_phase"] = "exit"
-    state["position_status"] = "bought_more"
-    state["entry_price"] = 28.1
-    state["entry_time"] = "10:05:00"
-    state["pending_decision"] = {
-        "trade_type": "positive",
-        "decision_type": "止盈止损出场建议",
-        "suggested_action": "卖出 100 股 (价格参考 28.50)，完成正T",
-        "exit_signal": "take_profit",
-        "exit_message": "达到止盈目标！当前 28.50，成本 28.10，盈利 1.4%",
-        "target_price": 28.52,
-        "stop_loss_price": 27.54,
-        "predicted_price": 28.47,
-        "reason": "达到止盈目标！当前 28.50，成本 28.10，盈利 1.4%",
-        "stock_code": "600030.SH",
-        "stock_name": "中信证券",
-        "current_price": 28.5,
-        "indicators": "MA5=28.20, MA20=28.17, RSI=55.2, MACD=0.020",
-    }
-    _write_state(state)
-    print("场景: 设置等待出场确认（正T卖出）")
+    """场景: 正T持仓中，LLM 已提议卖出，等待用户确认"""
+    _write_state(_holding_state("positive", PT_ENTRY_PRICE))
+    print("场景: 等待出场确认（正T卖出，建议在对话中）")
 
 
 def setup_pt_sell_exec():
-    """场景: 执行出场（正T卖出）"""
-    state = _load_state()
-    pending = state.get("pending_decision")
-    if not pending or pending.get("trade_type") != "positive":
-        print("错误: 当前不是正T卖出待确认状态")
-        return
-
+    """场景: 正T已完成"""
+    state = _holding_state("positive", PT_ENTRY_PRICE)
     state["position_status"] = "holding"
     state["entry_price"] = None
     state["entry_time"] = None
     state["trade_phase"] = "done"
-    state["pending_decision"] = None
     _write_state(state)
-    print("场景: 执行出场（正T卖出）")
+    print("场景: 正T操作全部完成（done）")
 
 
 def setup_at_sell_wait():
-    """场景: 设置等待入场确认（反T卖出）"""
-    state = _default_state()
-    state["today"] = str(date.today())
-    state["trade_phase"] = "entry"
-    state["pending_decision"] = {
-        "trade_type": "negative",
-        "decision_type": "反T决策",
-        "suggested_action": "卖出 100 股 (价格参考 28.80)，等待回落后买入接回",
-        "next_status": "sold_part",
-        "target_price": 28.38,
-        "stop_loss_price": 29.38,
-        "predicted_price": 28.25,
-        "reason": "价格接近布林上轨; 价格接近近期高点",
-        "stock_code": "600030.SH",
-        "stock_name": "中信证券",
-        "current_price": 28.8,
-        "trade_shares": 100,
-        "indicators": "MA5=28.75, MA20=28.25, RSI=65.0, MACD=0.015",
-        "entry_price": 28.8,
-    }
-    _write_state(state)
-    print("场景: 设置等待入场确认（反T卖出）")
+    """场景: LLM 已提议反T卖出，等待用户确认（脚本侧仍为 entry 阶段）"""
+    _write_state(_entry_state())
+    print("场景: 等待入场确认（反T卖出，建议在对话中）")
 
 
 def setup_at_sell_exec():
-    """场景: 执行入场（反T卖出）"""
-    state = _load_state()
-    pending = state.get("pending_decision")
-    if not pending or pending.get("trade_type") != "negative":
-        print("错误: 当前不是反T卖出待确认状态")
-        return
-
-    state["traded_today"] = True
-    state["trade_type"] = "negative"
-    state["position_status"] = "sold_part"
-    state["entry_price"] = pending.get("entry_price")
-    state["entry_time"] = "10:05:00"
-    state["trade_phase"] = "exit"
-    state["pending_decision"] = None
-    _write_state(state)
-    print("场景: 执行入场（反T卖出）")
+    """场景: 反T已入场"""
+    _write_state(_holding_state("negative", AT_ENTRY_PRICE))
+    print("场景: 已入场（反T卖出，等待买入接回）")
 
 
 def setup_at_buy_wait():
-    """场景: 设置等待出场确认（反T买入接回）"""
-    state = _default_state()
-    state["today"] = str(date.today())
-    state["traded_today"] = True
-    state["trade_type"] = "negative"
-    state["trade_phase"] = "exit"
-    state["position_status"] = "sold_part"
-    state["entry_price"] = 28.8
-    state["entry_time"] = "10:05:00"
-    state["pending_decision"] = {
-        "trade_type": "negative",
-        "decision_type": "止盈止损出场建议",
-        "suggested_action": "买入接回 100 股 (价格参考 28.30)，完成反T",
-        "exit_signal": "take_profit",
-        "exit_message": "达到止盈目标！当前 28.30，成本 28.80，盈利 1.7%",
-        "target_price": 28.38,
-        "stop_loss_price": 29.38,
-        "predicted_price": 28.25,
-        "reason": "达到止盈目标！当前 28.30，成本 28.80，盈利 1.7%",
-        "stock_code": "600030.SH",
-        "stock_name": "中信证券",
-        "current_price": 28.3,
-        "indicators": "MA5=28.40, MA20=28.25, RSI=45.0, MACD=-0.015",
-    }
-    _write_state(state)
-    print("场景: 设置等待出场确认（反T买入接回）")
+    """场景: 反T持仓中，LLM 已提议买入接回，等待用户确认"""
+    _write_state(_holding_state("negative", AT_ENTRY_PRICE))
+    print("场景: 等待出场确认（反T买入接回，建议在对话中）")
 
 
 def setup_at_buy_exec():
-    """场景: 执行出场（反T买入接回）"""
-    state = _load_state()
-    pending = state.get("pending_decision")
-    if not pending or pending.get("trade_type") != "negative":
-        print("错误: 当前不是反T买入接回待确认状态")
-        return
-
+    """场景: 反T已完成"""
+    state = _holding_state("negative", AT_ENTRY_PRICE)
     state["position_status"] = "holding"
     state["entry_price"] = None
     state["entry_time"] = None
     state["trade_phase"] = "done"
-    state["pending_decision"] = None
     _write_state(state)
-    print("场景: 执行出场（反T买入接回）")
+    print("场景: 反T操作全部完成（done）")
 
 
 def show_state():
@@ -225,46 +126,31 @@ def show_state():
     print(json.dumps(state, ensure_ascii=False, indent=2))
 
 
+SCENARIOS = {
+    "pre": setup_pre,
+    "pt_buy_wait": setup_pt_buy_wait,
+    "pt_buy_exec": setup_pt_buy_exec,
+    "pt_sell_wait": setup_pt_sell_wait,
+    "pt_sell_exec": setup_pt_sell_exec,
+    "at_sell_wait": setup_at_sell_wait,
+    "at_sell_exec": setup_at_sell_exec,
+    "at_buy_wait": setup_at_buy_wait,
+    "at_buy_exec": setup_at_buy_exec,
+    "show": show_state,
+}
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("用法: python scenarios.py <命令>")
-        print("场景:")
-        print("  pre             - 盘前等待建议")
-        print("  pt_buy_wait     - 设置等待入场确认（正T买入）")
-        print("  pt_buy_exec     - 执行入场（正T买入）")
-        print("  pt_sell_wait    - 设置等待出场确认（正T卖出）")
-        print("  pt_sell_exec    - 执行出场（正T卖出）")
-        print("  at_sell_wait    - 设置等待入场确认（反T卖出）")
-        print("  at_sell_exec    - 执行入场（反T卖出）")
-        print("  at_buy_wait     - 设置等待出场确认（反T买入接回）")
-        print("  at_buy_exec     - 执行出场（反T买入接回）")
-        print("其他:")
-        print("  show            - 显示当前状态")
+        print("命令: " + " | ".join(SCENARIOS.keys()))
         sys.exit(1)
 
     cmd = sys.argv[1].strip().lower()
-
-    if cmd == "pre":
-        setup_pre()
-    elif cmd == "pt_buy_wait":
-        setup_pt_buy_wait()
-    elif cmd == "pt_buy_exec":
-        setup_pt_buy_exec()
-    elif cmd == "pt_sell_wait":
-        setup_pt_sell_wait()
-    elif cmd == "pt_sell_exec":
-        setup_pt_sell_exec()
-    elif cmd == "at_sell_wait":
-        setup_at_sell_wait()
-    elif cmd == "at_sell_exec":
-        setup_at_sell_exec()
-    elif cmd == "at_buy_wait":
-        setup_at_buy_wait()
-    elif cmd == "at_buy_exec":
-        setup_at_buy_exec()
-    elif cmd == "show":
-        show_state()
+    handler = SCENARIOS.get(cmd)
+    if handler:
+        handler()
     else:
         print(f"未知命令: {cmd}")
-        print("用法: python scenarios.py <pre|pt_buy_wait|pt_buy_exec|pt_sell_wait|pt_sell_exec|at_sell_wait|at_sell_exec|at_buy_wait|at_buy_exec|show>")
+        print("用法: python scenarios.py <" + "|".join(SCENARIOS.keys()) + ">")
         sys.exit(1)
