@@ -1,154 +1,121 @@
 ---
 name: stock-market-analysis
-description: A股大盘分析与市场情绪分析工具，提供实时大盘数据、技术指标计算和市场情绪评估
+description: A股大盘数据采集与AI分析工具。脚本只负责采集整理行情、技术指标、市场情绪原始数据（统一JSON输出，不含结论），由LLM结合方法论完成推理，并按统一格式输出分析报告
 user-invocable: true
 ---
 
-# A股大盘分析与情绪分析
+# A股大盘数据采集与AI分析
 
-专业的A股市场分析工具，提供大盘指数数据、技术指标计算、市场情绪评估等功能。
+## 架构说明
 
-## 功能概览
+数据与推理严格分离：
 
-| 功能模块 | 描述 |
-|---|---|
-| 大盘数据 | 获取上证指数、深证成指、创业板指等主要指数的实时行情和历史数据 |
-| 技术指标 | 计算MA、MACD、RSI、KDJ、布林带等常用技术指标 |
-| 情绪分析 | 分析市场涨跌家数、涨跌停家数、资金流向等情绪指标 |
-| 市场状态 | 判断当前市场处于多头、空头还是震荡状态 |
+- **脚本层（采集整理）**：`src/` 下的脚本只负责采集行情/情绪原始数据，并做确定性数学计算（均线、MACD、RSI 等数值及派生比值），输出统一 JSON。**脚本不输出任何分析结论**（无金叉标签、无情绪评分、无市场状态、无策略建议）。
+- **推理层（LLM）**：由你（LLM）读取采集数据，结合 `analysis_methodology.md` 方法论完成市场状态判定、情绪评估、策略研判。
+- **输出层（统一格式）**：分析结论必须按本文末尾的"统一输出格式"生成。
 
-## 使用场景
+## 工作流（必须按顺序执行）
 
-当用户询问以下内容时使用此技能：
-- A股大盘走势、上证指数/深证成指/创业板指行情
-- 市场情绪、涨跌家数、涨跌停统计
-- 技术指标分析（MA、MACD、RSI、KDJ等）
-- 市场状态判断、策略建议
+1. **采集数据**：运行统一采集命令，获取原始数据 JSON。
+2. **加载方法论**：阅读 `{baseDir}/analysis_methodology.md`，作为推理知识库。
+3. **LLM 推理**：基于原始数据逐项研判。禁止编造数据、禁止输出方法论之外的无依据结论；每个结论必须引用具体数值。
+4. **统一格式输出**：按下方模板生成报告。
 
-## 可用命令
-
-### 1. 获取大盘行情数据
+## 数据采集命令
 
 ```bash
-python {baseDir}/src/market_data.py --index all
+python {baseDir}/src/collect_data.py                # 全量采集（默认）
+python {baseDir}/src/collect_data.py --module market      # 仅指数实时行情
+python {baseDir}/src/collect_data.py --module technical   # 仅技术指标（上证指数）
+python {baseDir}/src/collect_data.py --module sentiment   # 仅市场情绪原始数据
 ```
 
-获取所有主要指数（上证指数、深证成指、创业板指、沪深300）的最新行情数据。
-
-**参数**：
-- `--index`：指定指数，可选值：`sh`（上证指数）、`sz`（深证成指）、`cy`（创业板指）、`hs300`（沪深300）、`all`（全部）
-
-**示例**：
-```bash
-python {baseDir}/src/market_data.py --index sh
-python {baseDir}/src/market_data.py --index all
-```
-
-### 2. 获取历史K线数据
+补充命令（按需使用）：
 
 ```bash
+# 指定标的的历史K线
 python {baseDir}/src/market_data.py --kline --symbol sh000001 --days 60
-```
-
-获取指定股票或指数的历史K线数据。
-
-**参数**：
-- `--symbol`：股票/指数代码，沪市前缀`sh`，深市前缀`sz`
-- `--days`：获取天数（默认60天）
-
-**示例**：
-```bash
-python {baseDir}/src/market_data.py --kline --symbol sh000001 --days 120
-python {baseDir}/src/market_data.py --kline --symbol sz000001 --days 30
-```
-
-### 3. 计算技术指标
-
-```bash
-python {baseDir}/src/technical_indicators.py --symbol sh000001 --indicators macd,rsi,ma
-```
-
-计算指定股票或指数的技术指标。
-
-**参数**：
-- `--symbol`：股票/指数代码
-- `--indicators`：技术指标列表，逗号分隔，可选值：`ma`、`macd`、`rsi`、`kdj`、`boll`、`all`
-
-**示例**：
-```bash
+# 指定标的的技术指标（仅数值）
 python {baseDir}/src/technical_indicators.py --symbol sh000001 --indicators all
-python {baseDir}/src/technical_indicators.py --symbol sz399006 --indicators macd,rsi
 ```
 
-### 4. 市场情绪分析
+## 采集数据说明
 
-```bash
-python {baseDir}/src/sentiment_analysis.py
-```
+统一输出结构（`status` 为 `success`/`partial`/`error`）：
 
-获取市场情绪数据，包括涨跌家数、涨跌停家数、资金流向等。
+| 模块 | 字段 | 内容 |
+|---|---|---|
+| market | `data.market_overview` | 上证/深证/创业板/沪深300 实时行情（价格、涨跌幅、成交额等） |
+| technical | `data.technical` | 上证指数近30日K线 + 指标数值（MA/MACD/RSI/KDJ/布林带）+ 派生数据（`trend_structure`：价格与均线差值、MA20斜率、5日/20日均量比） |
+| sentiment | `data.sentiment` | 涨跌家数（`breadth`）、涨跌停家数（`limit_up_down`）、资金流（`north_bound_flow`）、单日成交额（`turnover`） |
 
-**示例**：
-```bash
-python {baseDir}/src/sentiment_analysis.py
-```
+注意：
 
-### 5. 市场状态判断
+- 指标均附带近5日序列（如 `dif_series`、`rsi_series`），供你观察交叉、拐点，交叉/超买超卖判断由你完成。
+- `north_bound_flow` 为非官方口径的扩展字段，仅作参考。
+- 某字段为 `null` 表示采集失败，报告中标注"数据缺失"，不得推测填充。
 
-```bash
-python {baseDir}/src/market_regime.py
-```
+## 推理规则
 
-综合分析当前市场状态，判断是多头、空头还是震荡市场，并给出策略建议。
+1. **市场状态判定**：按方法论第一节的"位置、趋势、量能、技术指标"四维综合判定（强势多头/弱势多头/多头/强势空头/弱势空头/空头/震荡偏强/震荡偏弱/震荡），并给出置信度与论据。
+2. **情绪评估**：参考方法论第二节的评分因子（上涨比例、涨跌停比、资金流），自行论证后给出情绪等级（极端悲观 ~ 极端乐观）。
+3. **策略研判**：结合当前市场状态与情绪，按方法论第四节给出仓位与操作建议。
+4. **交叉与拐点识别**：利用指标近期序列（如 DIF 上穿/下穿 DEA、K/D 交叉、MACD 柱状图正负转换）判断信号，需说明依据的数值变化。
+5. 所有结论必须可追溯：引用具体数值（如"收盘 3200.50 高于 MA20 3180.20"）。
+6. 分析仅供参考，不构成投资建议。
 
-**示例**：
-```bash
-python {baseDir}/src/market_regime.py
-```
+## 统一输出格式
 
-### 6. 综合分析报告
+分析报告必须严格按以下模板输出（Markdown）：
 
-```bash
-python {baseDir}/src/comprehensive_report.py
-```
+```markdown
+# A股大盘分析报告
 
-生成完整的市场分析报告，包含大盘行情、技术指标、情绪分析和市场状态判断。
+> 数据时间：{data.timestamp} ｜ 市场状态：{多头/空头/震荡及强弱} ｜ 情绪：{等级}
 
-**示例**：
-```bash
-python {baseDir}/src/comprehensive_report.py
+## 一、指数行情
+
+| 指数 | 收盘 | 涨跌幅 | 成交额 |
+|---|---|---|---|
+（上证指数/深证成指/创业板指/沪深300，数据缺失写"数据缺失"）
+
+## 二、技术面分析
+
+- **趋势结构**：价格与 MA20/MA60 位置关系、MA20 方向（引用 trend_structure 数值）→ 格局结论
+- **动能指标**：MACD（DIF/DEA/柱状图变化，是否交叉）、RSI、KDJ 状态（引用数值与序列）
+- **量能水平**：量比 5日/20日 解读（放量/缩量）
+- **关键价位**：MA20、MA60、布林带上/下轨
+
+## 三、市场情绪
+
+- **涨跌结构**：上涨/下跌/平盘家数与比例
+- **涨跌停对比**：涨停 X 家 / 跌停 Y 家
+- **资金动向**：资金流数据及解读
+- **情绪评估**：情绪等级 + 打分依据
+
+## 四、综合研判
+
+- **市场状态**：{状态}（置信度 {XX}%）
+- **核心逻辑**：2-4 条支撑判断的论据链（引用数值）
+- **操作策略**：仓位建议 + 具体操作
+- **后市关注**：需跟踪的信号与关键价位
+
+## 五、风险提示
+
+- 结合当前市场状态给出针对性风险（非固定文案）
+
+---
+*以上分析基于公开行情数据自动生成，仅供参考，不构成投资建议。*
 ```
 
 ## 数据来源
 
-- **腾讯财经**：实时行情数据、历史K线
-- **东方财富**：市场情绪数据（涨跌家数、资金流向）
-- **新浪财经**：补充数据
+- **腾讯财经**：实时行情数据
+- **新浪财经**：历史K线、市场情绪数据（涨跌家数、涨跌停）
 
 ## 注意事项
 
-- 数据仅供参考，不构成投资建议
 - 实时行情在交易时段更新，非交易时段显示最新收盘价
 - 市场情绪数据在交易日收盘后更新
 - 建议在交易时段（9:30-15:00）获取最新数据
-
-## 输出格式
-
-所有命令均输出JSON格式数据，便于AI解析和展示。
-
-**示例输出格式**：
-```json
-{
-  "status": "success",
-  "data": {
-    "index": "上证指数",
-    "code": "sh000001",
-    "price": 3200.50,
-    "change": 1.25,
-    "change_percent": 0.04,
-    "volume": 3500000000,
-    "market_cap": 55000000000000
-  },
-  "timestamp": "2024-01-15 10:30:00"
-}
-```
+- 数据仅供参考，不构成投资建议

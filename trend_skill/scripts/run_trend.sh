@@ -1,7 +1,7 @@
 #!/bin/bash
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_SCRIPT="$BASE_DIR/src/comprehensive_report.py"
+PYTHON_SCRIPT="$BASE_DIR/src/collect_data.py"
 
 if [ -f "$BASE_DIR/venv/bin/python" ]; then
     PYTHON="$BASE_DIR/venv/bin/python"
